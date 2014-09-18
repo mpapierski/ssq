@@ -21,15 +21,30 @@
 
 // Modified by Beerdude26 (beerdude26@gmail.com) to get it running (roughly) in Source engine
 
-#include "cbase.h"
-#include <ws2tcpip.h>
-#include <windows.h>
-#include <tlhelp32.h>
-#include "SSQ.h"
+#include "ssq.h"
+#include <sys/socket.h>
+#include <string.h>
 
 //#pragma comment(linker,"/entry:DllMain /subsystem:windows /nodefaultlib")
 //#pragma comment(linker,"/filealign:512 /merge:.rdata=.text /merge:.data=.text")
 //#pragma comment(linker,"/section:.text,rwe /ignore:4078")
+
+typedef unsigned short USHORT;
+typedef char *PCHAR;
+typedef short *PSHORT;
+typedef int *PINT;
+typedef long *PLONG;
+typedef void *PVOID;
+
+typedef unsigned char *PUCHAR;
+typedef unsigned short *PUSHORT;
+typedef unsigned int *PUINT;
+typedef unsigned long *PULONG;
+typedef unsigned long long ULONG64;
+typedef unsigned long long LARGE_INTEGER;
+typedef unsigned int UINT32;
+
+#define SOCKET_ERROR -1
 
 #define A2M_GET_SERVERS_BATCH2 0x31
 #define S2C_CHALLENGE 0x41
@@ -96,9 +111,9 @@ enum
 	SSQ_TCP_RCON
 };
 
-BOOL ssq_is_initialized = FALSE;
-BOOL log_status = FALSE;
-BOOL exit_log_thread = FALSE;
+bool ssq_is_initialized = false;
+bool log_status = false;
+bool exit_log_thread = false;
 
 #ifdef __cplusplus
 extern "C" {
@@ -121,11 +136,15 @@ char* ssq_functions_internal[6] =
 	"SSQ_Startup"
 };
 
-DWORD exit_code_log_thread;
-DWORD identifier_log_thread;
+unsigned int exit_code_log_thread;
+unsigned int identifier_log_thread;
 
-HANDLE handle_log_thread;
-HANDLE handle_module;
+int int_log_thread;
+int int_module;
+
+#if !defined(_WIN32)
+typedef int SOCKET;
+#endif
 
 SOCKET ssq_socket[SSQ_SOCKET_COUNT];
 
@@ -135,151 +154,154 @@ SSQ_REPLY_UNION reply_union;
 
 int max_rs_size = 65535;
 
-void WINAPI SSQ_OutputDebugString(BYTE index,BYTE winsock,BYTE doExport,DWORD address);
-BOOL WINAPI SSQ_Startup();
+void SSQ_OutputDebugString(unsigned char index,unsigned char winsock,unsigned char doExport,unsigned int address);
+bool SSQ_Startup();
 
-BOOL WINAPI SSQ_AddressToFunctionName(DWORD address,char** module,char** function)
+bool SSQ_AddressToFunctionName(unsigned int address,char** module,char** function)
 {
-	static HANDLE handle_snapshot;
+#if 0
+	static int int_snapshot;
 	static MODULEENTRY32 module_entry;
-	static BOOL module_next;
+	static bool module_next;
 	static PIMAGE_DOS_HEADER dos_header;
 	static PIMAGE_NT_HEADERS nt_headers;
 	static PIMAGE_EXPORT_DIRECTORY export_directory;
-	static DWORD counter;
-	static DWORD counter2;
+	static unsigned int counter;
+	static unsigned int counter2;
 
 	if(HIWORD(address)==0||HIWORD(module)==0||HIWORD(function)==0)
 	{
-		return FALSE;
+		return false;
 	}
 
-	handle_snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE,GetCurrentProcessId());
+	int_snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE,GetCurrentProcessId());
 
-	if(handle_snapshot==INVALID_HANDLE_VALUE)
+	if(int_snapshot==INVALID_int_VALUE)
 	{
-		return FALSE;
+		return false;
 	}
 
 	module_entry.dwSize = sizeof(module_entry);
 
-	if(Module32First(handle_snapshot,&module_entry)==FALSE)
+	if(Module32First(int_snapshot,&module_entry)==false)
 	{
-		CloseHandle(handle_snapshot);
+		Closeint(int_snapshot);
 
-		return FALSE;
+		return false;
 	}
 
 	do
 	{
-		if(address>=(DWORD)module_entry.modBaseAddr&&address<((DWORD)module_entry.modBaseAddr+module_entry.modBaseSize))
+		if(address>=(unsigned int)module_entry.modBaseAddr&&address<((unsigned int)module_entry.modBaseAddr+module_entry.modBaseSize))
 		{
 			*module = module_entry.szModule;
 
 			break;
 		}
 	}
-	while((module_next = Module32Next(handle_snapshot,&module_entry))==TRUE);
+	while((module_next = Module32Next(int_snapshot,&module_entry))==true);
 
-	CloseHandle(handle_snapshot);
+	Closeint(int_snapshot);
 
-	if(module_next==FALSE)
+	if(module_next==false)
 	{
-		return FALSE;
+		return false;
 	}
 
 	dos_header = (PIMAGE_DOS_HEADER)module_entry.modBaseAddr;
-	nt_headers = (PIMAGE_NT_HEADERS)((DWORD)dos_header+dos_header->e_lfanew);
-	export_directory = (PIMAGE_EXPORT_DIRECTORY)((DWORD)dos_header+nt_headers->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress);
+	nt_headers = (PIMAGE_NT_HEADERS)((unsigned int)dos_header+dos_header->e_lfanew);
+	export_directory = (PIMAGE_EXPORT_DIRECTORY)((unsigned int)dos_header+nt_headers->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress);
 
 	for(counter = 0;counter<export_directory->NumberOfFunctions;counter++)
 	{
-		if(((DWORD)dos_header+((PULONG)((DWORD)dos_header+(DWORD)export_directory->AddressOfFunctions))[counter])==address)
+		if(((unsigned int)dos_header+((PULONG)((unsigned int)dos_header+(unsigned int)export_directory->AddressOfFunctions))[counter])==address)
 		{
 			for(counter2 = 0;counter2<export_directory->NumberOfNames;counter2++)
 			{
-				if(((PUSHORT)((DWORD)dos_header+(DWORD)export_directory->AddressOfNameOrdinals))[counter2]==counter)
+				if(((PUSHORT)((unsigned int)dos_header+(unsigned int)export_directory->AddressOfNameOrdinals))[counter2]==counter)
 				{
-					*function = (char*)((DWORD)dos_header+((PULONG)((DWORD)dos_header+(DWORD)export_directory->AddressOfNames))[counter2]);
+					*function = (char*)((unsigned int)dos_header+((PULONG)((unsigned int)dos_header+(unsigned int)export_directory->AddressOfNames))[counter2]);
 
-					//wsprintf(test,"c: %i c2 %i address: 0x%08X ordinal: %i %08X aof %08X",counter,counter2,address,ordinal,(DWORD)dos_header+(DWORD)export_directory->AddressOfNameOrdinals,(DWORD)dos_header+(DWORD)export_directory->AddressOfFunctions);
+					//wsprintf(test,"c: %i c2 %i address: 0x%08X ordinal: %i %08X aof %08X",counter,counter2,address,ordinal,(unsigned int)dos_header+(unsigned int)export_directory->AddressOfNameOrdinals,(unsigned int)dos_header+(unsigned int)export_directory->AddressOfFunctions);
 					//MessageBox(0,*function,test,0);
 
-					return TRUE;				
+					return true;				
 				}
 			}
 		}
 	}
-
-	return FALSE;
+#endif
+	return false;
 }
 
-BOOL WINAPI SSQ_Cleanup()
+bool SSQ_Cleanup()
 {
-	static BOOL result;
-	static BYTE socket_count;
+#if 0
+	static bool result;
+	static unsigned char socket_count;
 
-	result = TRUE;
+	result = true;
 
 	for(socket_count = 0;socket_count<SSQ_SOCKET_COUNT;socket_count++)
 	{
 		if(closesocket(ssq_socket[socket_count])==SOCKET_ERROR)
 		{
-			SSQ_OutputDebugString(INTERNAL_SSQ_CLEANUP,1,0,(DWORD)closesocket);
+			SSQ_OutputDebugString(INTERNAL_SSQ_CLEANUP,1,0,(unsigned int)closesocket);
 
-			result = FALSE;
+			result = false;
 		}
 	}
 
-	if(GetExitCodeThread(handle_log_thread,&exit_code_log_thread)==FALSE)
+	if(GetExitCodeThread(int_log_thread,&exit_code_log_thread)==false)
 	{
-		SSQ_OutputDebugString(INTERNAL_SSQ_CLEANUP,0,0,(DWORD)GetExitCodeThread);
+		SSQ_OutputDebugString(INTERNAL_SSQ_CLEANUP,0,0,(unsigned int)GetExitCodeThread);
 
-		result = FALSE;
+		result = false;
 	}
 
-	if(exit_code_log_thread==STILL_ACTIVE&&log_status==TRUE)
+	if(exit_code_log_thread==STILL_ACTIVE&&log_status==true)
 	{
-		exit_log_thread = TRUE;
+		exit_log_thread = true;
 
-		if(WaitForSingleObject(handle_log_thread,INFINITE)==WAIT_FAILED)
+		if(WaitForSingleObject(int_log_thread,INFINITE)==WAIT_FAILED)
 		{
-			SSQ_OutputDebugString(INTERNAL_SSQ_CLEANUP,0,0,(DWORD)WaitForSingleObject);
+			SSQ_OutputDebugString(INTERNAL_SSQ_CLEANUP,0,0,(unsigned int)WaitForSingleObject);
 
-			result = FALSE;
+			result = false;
 		}
 	}
 
-	if(CloseHandle(handle_log_thread)==FALSE)
+	if(Closeint(int_log_thread)==false)
 	{
-		SSQ_OutputDebugString(INTERNAL_SSQ_CLEANUP,0,0,(DWORD)CloseHandle);
+		SSQ_OutputDebugString(INTERNAL_SSQ_CLEANUP,0,0,(unsigned int)Closeint);
 
-		result = FALSE;
+		result = false;
 	}
 
 	if(VirtualFree(rs_buffer,0,MEM_RELEASE)==0)
 	{
-		SSQ_OutputDebugString(INTERNAL_SSQ_CLEANUP,0,0,(DWORD)VirtualFree);
+		SSQ_OutputDebugString(INTERNAL_SSQ_CLEANUP,0,0,(unsigned int)VirtualFree);
 
-		result = FALSE;
+		result = false;
 	}
 
 	if(WSACleanup()==SOCKET_ERROR)
 	{
-		SSQ_OutputDebugString(INTERNAL_SSQ_CLEANUP,1,0,(DWORD)WSACleanup);
+		SSQ_OutputDebugString(INTERNAL_SSQ_CLEANUP,1,0,(unsigned int)WSACleanup);
 
-		result = FALSE;
+		result = false;
 	}
 
 	return result;
+#endif
 }
 
-char* WINAPI SSQ_FormatBatchReply(PSSQ_BATCH_REPLY batch_reply,int index)
+char* SSQ_FormatBatchReply(PSSQ_BATCH_REPLY batch_reply,int index)
 {
 	static char* address_pointer;
 	static char address[22];
 
-	if(HIWORD(batch_reply)==0||batch_reply->data_size==0||batch_reply->data==0||index>(batch_reply->num_servers-1)||ssq_is_initialized==FALSE)
+	if(HIWORD(batch_reply)==0||batch_reply->data_size==0||batch_reply->data==0||index>(batch_reply->num_servers-1)||ssq_is_initialized==false)
 	{
 		SSQ_OutputDebugString(EXTERNAL_SSQ_FORMAT_BATCH_REPLY,0,1,0);
 
@@ -290,7 +312,7 @@ char* WINAPI SSQ_FormatBatchReply(PSSQ_BATCH_REPLY batch_reply,int index)
 
 	if(address_pointer==0)
 	{
-		SSQ_OutputDebugString(EXTERNAL_SSQ_FORMAT_BATCH_REPLY,1,1,(DWORD)inet_ntoa);
+		SSQ_OutputDebugString(EXTERNAL_SSQ_FORMAT_BATCH_REPLY,1,1,(unsigned int)inet_ntoa);
 
 		return 0;
 	}
@@ -300,27 +322,27 @@ char* WINAPI SSQ_FormatBatchReply(PSSQ_BATCH_REPLY batch_reply,int index)
 	return address;
 }
 
-BOOL WINAPI SSQ_GetBatchReply(BYTE region,char* filter)
+bool SSQ_GetBatchReply(unsigned char region,char* filter)
 {
 	static char address[22];
 	static char start_address[10] = "0.0.0.0:0";
 	static int string_length_address;
 	static int string_length_filter;
-	static int bytes_received;
+	static int Bytes_received;
 	static SSQ_BATCH_REPLY batch_reply;
 	static char* address_pointer;
 
-	if((region>7&&region<255)||HIWORD(filter)==0||HIWORD(Callback)==0||ssq_is_initialized==FALSE)
+	if((region>7&&region<255)||HIWORD(filter)==0||HIWORD(Callback)==0||ssq_is_initialized==false)
 	{
 		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_BATCH_REPLY,0,1,0);
 
-		return FALSE;
+		return false;
 	}
 	else if(lstrcpyn(address,start_address,sizeof(start_address))==0)
 	{
-		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_BATCH_REPLY,0,1,(DWORD)lstrcpyn);
+		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_BATCH_REPLY,0,1,(unsigned int)lstrcpyn);
 
-		return FALSE;
+		return false;
 	}
 
 	do
@@ -332,115 +354,115 @@ BOOL WINAPI SSQ_GetBatchReply(BYTE region,char* filter)
 
 		if(lstrcpyn(&rs_buffer[2],address,string_length_address)==0)
 		{
-			SSQ_OutputDebugString(EXTERNAL_SSQ_GET_BATCH_REPLY,0,1,(DWORD)lstrcpyn);
+			SSQ_OutputDebugString(EXTERNAL_SSQ_GET_BATCH_REPLY,0,1,(unsigned int)lstrcpyn);
 
-			return FALSE;
+			return false;
 		}
 
 		string_length_filter = lstrlen(filter)+1;
 
 		if(lstrcpyn(&rs_buffer[2+string_length_address],filter,string_length_filter)==0)
 		{
-			SSQ_OutputDebugString(EXTERNAL_SSQ_GET_BATCH_REPLY,0,1,(DWORD)lstrcpyn);
+			SSQ_OutputDebugString(EXTERNAL_SSQ_GET_BATCH_REPLY,0,1,(unsigned int)lstrcpyn);
 
-			return FALSE;
+			return false;
 		}
 		else if(send(ssq_socket[SSQ_UDP_MS],rs_buffer,2+string_length_address+string_length_filter,0)==SOCKET_ERROR)
 		{
-			SSQ_OutputDebugString(EXTERNAL_SSQ_GET_BATCH_REPLY,1,1,(DWORD)send);
+			SSQ_OutputDebugString(EXTERNAL_SSQ_GET_BATCH_REPLY,1,1,(unsigned int)send);
 
-			return FALSE;
+			return false;
 		}
 
-		bytes_received = recv(ssq_socket[SSQ_UDP_MS],rs_buffer,max_rs_size,0);
+		Bytes_received = recv(ssq_socket[SSQ_UDP_MS],rs_buffer,max_rs_size,0);
 
-		if(bytes_received==SOCKET_ERROR||bytes_received==0)
+		if(Bytes_received==SOCKET_ERROR||Bytes_received==0)
 		{
-			SSQ_OutputDebugString(EXTERNAL_SSQ_GET_BATCH_REPLY,1,1,(DWORD)recv);
+			SSQ_OutputDebugString(EXTERNAL_SSQ_GET_BATCH_REPLY,1,1,(unsigned int)recv);
 
-			return FALSE;
+			return false;
 		}
 		else if(rs_buffer[4]!=M2A_SERVER_BATCH)
 		{
 			SSQ_OutputDebugString(EXTERNAL_SSQ_GET_BATCH_REPLY,0,1,0);
 
-			return FALSE;
+			return false;
 		}
 
-		batch_reply.num_servers = (bytes_received-6)/6;
-		batch_reply.data_size = bytes_received-6;
+		batch_reply.num_servers = (Bytes_received-6)/6;
+		batch_reply.data_size = Bytes_received-6;
 		batch_reply.data = &rs_buffer[6];
 
 		reply_union.batch_reply = &batch_reply;
 
-		if(Callback(SSQ_BATCH_REPLY_CALLBACK,&reply_union)==FALSE)
+		if(Callback(SSQ_BATCH_REPLY_CALLBACK,&reply_union)==false)
 		{
 			break;
 		}
 
-		address_pointer = inet_ntoa(*(PIN_ADDR)&rs_buffer[bytes_received-6]);
+		address_pointer = inet_ntoa(*(PIN_ADDR)&rs_buffer[Bytes_received-6]);
 
 		if(address_pointer==0)
 		{
-			SSQ_OutputDebugString(EXTERNAL_SSQ_GET_BATCH_REPLY,1,1,(DWORD)inet_ntoa);
+			SSQ_OutputDebugString(EXTERNAL_SSQ_GET_BATCH_REPLY,1,1,(unsigned int)inet_ntoa);
 
-			return FALSE;
+			return false;
 		}
 
-		wsprintf(address,"%s:%hu",address_pointer,ntohs(*(PUSHORT)&rs_buffer[bytes_received-2]));
+		wsprintf(address,"%s:%hu",address_pointer,ntohs(*(PUSHORT)&rs_buffer[Bytes_received-2]));
 	}
-	while(*(long*)&rs_buffer[bytes_received-6]!=0&&*(short*)&rs_buffer[bytes_received-2]!=0);
+	while(*(long*)&rs_buffer[Bytes_received-6]!=0&&*(short*)&rs_buffer[Bytes_received-2]!=0);
 
-	return TRUE;
+	return true;
 }
 
-void WINAPI SSQ_GetFunctionStrings(PIMAGE_DOS_HEADER dos_header)
+void SSQ_GetFunctionStrings(PIMAGE_DOS_HEADER dos_header)
 {
 	static PIMAGE_NT_HEADERS nt_headers;
 	static PIMAGE_EXPORT_DIRECTORY export_directory;
-	static DWORD counter;
+	static unsigned int counter;
 
-	nt_headers = (PIMAGE_NT_HEADERS)((DWORD)dos_header+dos_header->e_lfanew);
-	export_directory = (PIMAGE_EXPORT_DIRECTORY)((DWORD)dos_header+nt_headers->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress);
+	nt_headers = (PIMAGE_NT_HEADERS)((unsigned int)dos_header+dos_header->e_lfanew);
+	export_directory = (PIMAGE_EXPORT_DIRECTORY)((unsigned int)dos_header+nt_headers->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress);
 
 	for(counter = 0;counter<export_directory->NumberOfNames;counter++)
 	{
-		ssq_functions_external[counter] = (char*)((DWORD)dos_header+((PULONG)((DWORD)dos_header+(DWORD)export_directory->AddressOfNames))[counter]);
+		ssq_functions_external[counter] = (char*)((unsigned int)dos_header+((PULONG)((unsigned int)dos_header+(unsigned int)export_directory->AddressOfNames))[counter]);
 	}
 }
 
-BOOL WINAPI SSQ_GetInfoReply(PSSQ_INFO_REPLY info_reply)
+bool SSQ_GetInfoReply(PSSQ_INFO_REPLY info_reply)
 {
-	static int bytes_received;
+	static int Bytes_received;
 	static int index;
 	static int string_length;
 
-	if(HIWORD(info_reply)==0||ssq_is_initialized==FALSE)
+	if(HIWORD(info_reply)==0||ssq_is_initialized==false)
 	{
 		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_INFO_REPLY,0,1,0);
 
-		return FALSE;
+		return false;
 	}
 	else if(send(ssq_socket[SSQ_UDP_GS],A2S_INFO,A2S_INFO_LENGTH,0)==SOCKET_ERROR)
 	{
-		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_INFO_REPLY,1,1,(DWORD)send);
+		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_INFO_REPLY,1,1,(unsigned int)send);
 
-		return FALSE;
+		return false;
 	}
 
-	bytes_received = recv(ssq_socket[SSQ_UDP_GS],rs_buffer,max_rs_size,0);
+	Bytes_received = recv(ssq_socket[SSQ_UDP_GS],rs_buffer,max_rs_size,0);
 		
-	if(bytes_received==SOCKET_ERROR||bytes_received==0)
+	if(Bytes_received==SOCKET_ERROR||Bytes_received==0)
 	{
-		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_INFO_REPLY,1,1,(DWORD)recv);
+		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_INFO_REPLY,1,1,(unsigned int)recv);
 
-		return FALSE;
+		return false;
 	}
 	else if(rs_buffer[4]!=S2A_INFO)
 	{
 		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_INFO_REPLY,0,1,0);
 
-		return FALSE;
+		return false;
 	}
 
 	info_reply->version = rs_buffer[5];
@@ -451,9 +473,9 @@ BOOL WINAPI SSQ_GetInfoReply(PSSQ_INFO_REPLY info_reply)
 	{
 		if(lstrcpyn(info_reply->hostname,&rs_buffer[index],sizeof(info_reply->hostname)-1)==0)
 		{
-			SSQ_OutputDebugString(EXTERNAL_SSQ_GET_INFO_REPLY,0,1,(DWORD)lstrcpyn);
+			SSQ_OutputDebugString(EXTERNAL_SSQ_GET_INFO_REPLY,0,1,(unsigned int)lstrcpyn);
 
-			return FALSE;
+			return false;
 		}
 
 		rs_buffer[index+(sizeof(info_reply->hostname)-1)] = 0;
@@ -462,9 +484,9 @@ BOOL WINAPI SSQ_GetInfoReply(PSSQ_INFO_REPLY info_reply)
 	{
 		if(lstrcpyn(info_reply->hostname,&rs_buffer[index],string_length+1)==0)
 		{
-			SSQ_OutputDebugString(EXTERNAL_SSQ_GET_INFO_REPLY,0,1,(DWORD)lstrcpyn);
+			SSQ_OutputDebugString(EXTERNAL_SSQ_GET_INFO_REPLY,0,1,(unsigned int)lstrcpyn);
 
-			return FALSE;
+			return false;
 		}
 	}
 	else
@@ -478,9 +500,9 @@ BOOL WINAPI SSQ_GetInfoReply(PSSQ_INFO_REPLY info_reply)
 	{
 		if(lstrcpyn(info_reply->map,&rs_buffer[index],sizeof(info_reply->map)-1)==0)
 		{
-			SSQ_OutputDebugString(EXTERNAL_SSQ_GET_INFO_REPLY,0,1,(DWORD)lstrcpyn);
+			SSQ_OutputDebugString(EXTERNAL_SSQ_GET_INFO_REPLY,0,1,(unsigned int)lstrcpyn);
 
-			return FALSE;
+			return false;
 		}
 
 		rs_buffer[index+(sizeof(info_reply->map)-1)] = 0;
@@ -489,9 +511,9 @@ BOOL WINAPI SSQ_GetInfoReply(PSSQ_INFO_REPLY info_reply)
 	{
 		if(lstrcpyn(info_reply->map,&rs_buffer[index],string_length+1)==0)
 		{
-			SSQ_OutputDebugString(EXTERNAL_SSQ_GET_INFO_REPLY,0,1,(DWORD)lstrcpyn);
+			SSQ_OutputDebugString(EXTERNAL_SSQ_GET_INFO_REPLY,0,1,(unsigned int)lstrcpyn);
 
-			return FALSE;
+			return false;
 		}
 	}
 	else
@@ -505,9 +527,9 @@ BOOL WINAPI SSQ_GetInfoReply(PSSQ_INFO_REPLY info_reply)
 	{
 		if(lstrcpyn(info_reply->game_directory,&rs_buffer[index],sizeof(info_reply->game_directory)-1)==0)
 		{
-			SSQ_OutputDebugString(EXTERNAL_SSQ_GET_INFO_REPLY,0,1,(DWORD)lstrcpyn);
+			SSQ_OutputDebugString(EXTERNAL_SSQ_GET_INFO_REPLY,0,1,(unsigned int)lstrcpyn);
 
-			return FALSE;
+			return false;
 		}
 
 		rs_buffer[index+(sizeof(info_reply->game_directory)-1)] = 0;
@@ -516,9 +538,9 @@ BOOL WINAPI SSQ_GetInfoReply(PSSQ_INFO_REPLY info_reply)
 	{
 		if(lstrcpyn(info_reply->game_directory,&rs_buffer[index],string_length+1)==0)
 		{
-			SSQ_OutputDebugString(EXTERNAL_SSQ_GET_INFO_REPLY,0,1,(DWORD)lstrcpyn);
+			SSQ_OutputDebugString(EXTERNAL_SSQ_GET_INFO_REPLY,0,1,(unsigned int)lstrcpyn);
 
-			return FALSE;
+			return false;
 		}
 	}
 	else
@@ -532,9 +554,9 @@ BOOL WINAPI SSQ_GetInfoReply(PSSQ_INFO_REPLY info_reply)
 	{
 		if(lstrcpyn(info_reply->game_description,&rs_buffer[index],sizeof(info_reply->game_description)-1)==0)
 		{
-			SSQ_OutputDebugString(EXTERNAL_SSQ_GET_INFO_REPLY,0,1,(DWORD)lstrcpyn);
+			SSQ_OutputDebugString(EXTERNAL_SSQ_GET_INFO_REPLY,0,1,(unsigned int)lstrcpyn);
 
-			return FALSE;
+			return false;
 		}
 
 		rs_buffer[index+(sizeof(info_reply->game_description)-1)] = 0;
@@ -543,9 +565,9 @@ BOOL WINAPI SSQ_GetInfoReply(PSSQ_INFO_REPLY info_reply)
 	{
 		if(lstrcpyn(info_reply->game_description,&rs_buffer[index],string_length+1)==0)
 		{
-			SSQ_OutputDebugString(EXTERNAL_SSQ_GET_INFO_REPLY,0,1,(DWORD)lstrcpyn);
+			SSQ_OutputDebugString(EXTERNAL_SSQ_GET_INFO_REPLY,0,1,(unsigned int)lstrcpyn);
 
-			return FALSE;
+			return false;
 		}
 	}
 	else
@@ -570,9 +592,9 @@ BOOL WINAPI SSQ_GetInfoReply(PSSQ_INFO_REPLY info_reply)
 	{	
 		if(lstrcpyn(info_reply->game_version,&rs_buffer[index],sizeof(info_reply->game_version)-1)==0)
 		{
-			SSQ_OutputDebugString(EXTERNAL_SSQ_GET_INFO_REPLY,0,1,(DWORD)lstrcpyn);
+			SSQ_OutputDebugString(EXTERNAL_SSQ_GET_INFO_REPLY,0,1,(unsigned int)lstrcpyn);
 
-			return FALSE;
+			return false;
 		}
 
 		rs_buffer[index+(sizeof(info_reply->game_version)-1)] = 0;
@@ -581,9 +603,9 @@ BOOL WINAPI SSQ_GetInfoReply(PSSQ_INFO_REPLY info_reply)
 	{
 		if(lstrcpyn(info_reply->game_version,&rs_buffer[index],string_length+1)==0)
 		{
-			SSQ_OutputDebugString(EXTERNAL_SSQ_GET_INFO_REPLY,0,1,(DWORD)lstrcpyn);
+			SSQ_OutputDebugString(EXTERNAL_SSQ_GET_INFO_REPLY,0,1,(unsigned int)lstrcpyn);
 
-			return FALSE;
+			return false;
 		}
 	}
 	else
@@ -591,10 +613,10 @@ BOOL WINAPI SSQ_GetInfoReply(PSSQ_INFO_REPLY info_reply)
 		info_reply->game_version[0] = 0;
 	}
 
-	return TRUE;
+	return true;
 }
 
-BOOL WINAPI SSQ_GetIpPort(char* address,PSOCKADDR socket_address)
+bool SSQ_GetIpPort(char* address,PSOCKADDR socket_address)
 {
 	static char temp_address[256];
 	static int length = sizeof(*socket_address);
@@ -605,13 +627,13 @@ BOOL WINAPI SSQ_GetIpPort(char* address,PSOCKADDR socket_address)
 	{
 		SSQ_OutputDebugString(INTERNAL_SSQ_GET_IP_PORT,0,0,0);
 
-		return FALSE;
+		return false;
 	}
 	else if(lstrcpy(temp_address,address)==0)
 	{
-		SSQ_OutputDebugString(INTERNAL_SSQ_GET_IP_PORT,0,0,(DWORD)lstrcpy);
+		SSQ_OutputDebugString(INTERNAL_SSQ_GET_IP_PORT,0,0,(unsigned int)lstrcpy);
 
-		return FALSE;
+		return false;
 	}
 	else if(WSAStringToAddress(temp_address,AF_INET,0,socket_address,&length)==SOCKET_ERROR)
 	{
@@ -629,9 +651,9 @@ BOOL WINAPI SSQ_GetIpPort(char* address,PSOCKADDR socket_address)
 
 			if(getaddrinfo(temp_address,port_string,0,&response)!=0)
 			{
-				SSQ_OutputDebugString(INTERNAL_SSQ_GET_IP_PORT,1,0,(DWORD)getaddrinfo);
+				SSQ_OutputDebugString(INTERNAL_SSQ_GET_IP_PORT,1,0,(unsigned int)getaddrinfo);
 
-				return FALSE;
+				return false;
 			}
 
 			memcpy(socket_address,response->ai_addr,sizeof(*socket_address));
@@ -639,48 +661,48 @@ BOOL WINAPI SSQ_GetIpPort(char* address,PSOCKADDR socket_address)
 		}
 		else
 		{
-			SSQ_OutputDebugString(INTERNAL_SSQ_GET_IP_PORT,1,0,(DWORD)WSAStringToAddress);
+			SSQ_OutputDebugString(INTERNAL_SSQ_GET_IP_PORT,1,0,(unsigned int)WSAStringToAddress);
 
-			return FALSE;
+			return false;
 		}
 	}
 
-	return TRUE;
+	return true;
 }
 
-BOOL WINAPI SSQ_GetPlayerReply(PSSQ_PLAYER_REPLY player_reply)
+bool SSQ_GetPlayerReply(PSSQ_PLAYER_REPLY player_reply)
 {
-	static int bytes_received;
+	static int Bytes_received;
 	static int index;
 	static char i;
 	static int string_length;
 
-	if(HIWORD(player_reply)==0||ssq_is_initialized==FALSE)
+	if(HIWORD(player_reply)==0||ssq_is_initialized==false)
 	{
 		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_PLAYER_REPLY,0,1,0);
 
-		return FALSE;
+		return false;
 	}
 	else if(send(ssq_socket[SSQ_UDP_GS],A2S_PLAYER,A2S_PLAYER_LENGTH,0)==SOCKET_ERROR)
 	{
-		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_PLAYER_REPLY,1,1,(DWORD)send);
+		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_PLAYER_REPLY,1,1,(unsigned int)send);
 
-		return FALSE;
+		return false;
 	}
 
-	bytes_received = recv(ssq_socket[SSQ_UDP_GS],rs_buffer,max_rs_size,0);
+	Bytes_received = recv(ssq_socket[SSQ_UDP_GS],rs_buffer,max_rs_size,0);
 
-	if(bytes_received==SOCKET_ERROR||bytes_received==0)
+	if(Bytes_received==SOCKET_ERROR||Bytes_received==0)
 	{
-		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_PLAYER_REPLY,1,1,(DWORD)recv);
+		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_PLAYER_REPLY,1,1,(unsigned int)recv);
 
-		return FALSE;
+		return false;
 	}
 	else if(rs_buffer[4]!=S2A_PLAYER)
 	{
 		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_PLAYER_REPLY,0,1,0);
 
-		return FALSE;
+		return false;
 	}
 
 	player_reply->num_players = rs_buffer[5];
@@ -690,7 +712,7 @@ BOOL WINAPI SSQ_GetPlayerReply(PSSQ_PLAYER_REPLY player_reply)
 	for(i = 0;i<player_reply->num_players;i++)
 	{
 		//connecting players are not listed in the packet
-		if(index>=bytes_received)
+		if(index>=Bytes_received)
 		{
 			player_reply->player[i].index = -1;
 			player_reply->player[i].player_name[0] = 0;
@@ -707,9 +729,9 @@ BOOL WINAPI SSQ_GetPlayerReply(PSSQ_PLAYER_REPLY player_reply)
 		{
 			if(lstrcpyn(player_reply->player[i].player_name,&rs_buffer[index],sizeof(player_reply->player[i].player_name)-1)==0)
 			{
-				SSQ_OutputDebugString(EXTERNAL_SSQ_GET_PLAYER_REPLY,0,1,(DWORD)lstrcpyn);
+				SSQ_OutputDebugString(EXTERNAL_SSQ_GET_PLAYER_REPLY,0,1,(unsigned int)lstrcpyn);
 
-				return FALSE;
+				return false;
 			}
 
 			rs_buffer[index+(sizeof(player_reply->player[i].player_name)-1)] = 0;
@@ -718,9 +740,9 @@ BOOL WINAPI SSQ_GetPlayerReply(PSSQ_PLAYER_REPLY player_reply)
 		{
 			if(lstrcpyn(player_reply->player[i].player_name,&rs_buffer[index],string_length+1)==0)
 			{
-				SSQ_OutputDebugString(EXTERNAL_SSQ_GET_PLAYER_REPLY,0,1,(DWORD)lstrcpyn);
+				SSQ_OutputDebugString(EXTERNAL_SSQ_GET_PLAYER_REPLY,0,1,(unsigned int)lstrcpyn);
 
-				return FALSE;
+				return false;
 			}
 		}
 		else
@@ -735,21 +757,21 @@ BOOL WINAPI SSQ_GetPlayerReply(PSSQ_PLAYER_REPLY player_reply)
 		index += 4;
 	}
 
-	return TRUE;
+	return true;
 }
 
-BOOL WINAPI SSQ_GetRconReply(char* password,char* command)
+bool SSQ_GetRconReply(char* password,char* command)
 {
 	static int string_length;
-	static int bytes_received;
+	static int Bytes_received;
 	static int packet_size;
 	static int total_bytes;
 
-	if(HIWORD(password)==0||HIWORD(command)==0||HIWORD(Callback)==0||ssq_is_initialized==FALSE)
+	if(HIWORD(password)==0||HIWORD(command)==0||HIWORD(Callback)==0||ssq_is_initialized==false)
 	{
 		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_RCON_REPLY,0,1,0);
 
-		return FALSE;
+		return false;
 	}
 
 	string_length = lstrlen(password);
@@ -760,34 +782,34 @@ BOOL WINAPI SSQ_GetRconReply(char* password,char* command)
 
 	if(lstrcpy(&rs_buffer[12],password)==0)
 	{
-		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_RCON_REPLY,0,1,(DWORD)lstrcpy);
+		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_RCON_REPLY,0,1,(unsigned int)lstrcpy);
 
-		return FALSE;
+		return false;
 	}
 
 	rs_buffer[12+string_length+1] = 0;
 
 	if(send(ssq_socket[SSQ_TCP_RCON],rs_buffer,*(int*)&rs_buffer[0]+4,0)==SOCKET_ERROR)
 	{
-		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_RCON_REPLY,1,1,(DWORD)send);
+		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_RCON_REPLY,1,1,(unsigned int)send);
 
-		return FALSE;
+		return false;
 	}
 
-	bytes_received = recv(ssq_socket[SSQ_TCP_RCON],rs_buffer,max_rs_size,0);
-	bytes_received = recv(ssq_socket[SSQ_TCP_RCON],rs_buffer,max_rs_size,0);
+	Bytes_received = recv(ssq_socket[SSQ_TCP_RCON],rs_buffer,max_rs_size,0);
+	Bytes_received = recv(ssq_socket[SSQ_TCP_RCON],rs_buffer,max_rs_size,0);
 
-	if(bytes_received==SOCKET_ERROR||bytes_received==0)
+	if(Bytes_received==SOCKET_ERROR||Bytes_received==0)
 	{
-		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_RCON_REPLY,1,1,(DWORD)recv);
+		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_RCON_REPLY,1,1,(unsigned int)recv);
 
-		return FALSE;
+		return false;
 	}
 	else if(*(int*)&rs_buffer[0]!=10||*(int*)&rs_buffer[4]!=0x4C515353||*(int*)&rs_buffer[8]!=SERVERDATA_AUTH_RESPONSE)
 	{
 		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_RCON_REPLY,0,1,0);
 
-		return FALSE;
+		return false;
 	}
 
 	string_length = lstrlen(command);
@@ -798,18 +820,18 @@ BOOL WINAPI SSQ_GetRconReply(char* password,char* command)
 
 	if(lstrcpy(&rs_buffer[12],command)==0)
 	{
-		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_RCON_REPLY,0,1,(DWORD)lstrcpy);
+		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_RCON_REPLY,0,1,(unsigned int)lstrcpy);
 
-		return FALSE;
+		return false;
 	}
 
 	rs_buffer[12+string_length+1] = 0;
 
 	if(send(ssq_socket[SSQ_TCP_RCON],rs_buffer,*(int*)&rs_buffer[0]+4,0)==SOCKET_ERROR)
 	{
-		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_RCON_REPLY,1,1,(DWORD)send);
+		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_RCON_REPLY,1,1,(unsigned int)send);
 
-		return FALSE;
+		return false;
 	}
 
 	*(int*)&rs_buffer[0] = 10;
@@ -818,39 +840,39 @@ BOOL WINAPI SSQ_GetRconReply(char* password,char* command)
 
 	if(send(ssq_socket[SSQ_TCP_RCON],rs_buffer,14,0)==SOCKET_ERROR)
 	{
-		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_RCON_REPLY,1,1,(DWORD)send);
+		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_RCON_REPLY,1,1,(unsigned int)send);
 
-		return FALSE;
+		return false;
 	}
 
 	RCON_START:
 
-	bytes_received = recv(ssq_socket[SSQ_TCP_RCON],rs_buffer,12,0);
+	Bytes_received = recv(ssq_socket[SSQ_TCP_RCON],rs_buffer,12,0);
 
-	if(bytes_received==SOCKET_ERROR||bytes_received==0)
+	if(Bytes_received==SOCKET_ERROR||Bytes_received==0)
 	{
-		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_RCON_REPLY,1,1,(DWORD)recv);
+		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_RCON_REPLY,1,1,(unsigned int)recv);
 
-		return FALSE;
+		return false;
 	}
 	else if(*(int*)&rs_buffer[4]!=0x4C515353||*(int*)&rs_buffer[8]!=SERVERDATA_RESPONSE_VALUE)
 	{
 		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_RCON_REPLY,0,1,0);
 
-		return FALSE;
+		return false;
 	}
 
 	packet_size = *(int*)rs_buffer+4;
 
 	if(packet_size<=14)
 	{
-		bytes_received = recv(ssq_socket[SSQ_TCP_RCON],rs_buffer,2,0);
+		Bytes_received = recv(ssq_socket[SSQ_TCP_RCON],rs_buffer,2,0);
 
-		if(bytes_received==SOCKET_ERROR||bytes_received==0)
+		if(Bytes_received==SOCKET_ERROR||Bytes_received==0)
 		{
-			SSQ_OutputDebugString(EXTERNAL_SSQ_GET_RCON_REPLY,1,1,(DWORD)recv);
+			SSQ_OutputDebugString(EXTERNAL_SSQ_GET_RCON_REPLY,1,1,(unsigned int)recv);
 
-			return FALSE;
+			return false;
 		}
 
 		goto RCON_END;
@@ -860,23 +882,23 @@ BOOL WINAPI SSQ_GetRconReply(char* password,char* command)
 
 	RCON_INNER_START:
 
-	bytes_received = recv(ssq_socket[SSQ_TCP_RCON],&rs_buffer[total_bytes],packet_size-12-total_bytes,0);
+	Bytes_received = recv(ssq_socket[SSQ_TCP_RCON],&rs_buffer[total_bytes],packet_size-12-total_bytes,0);
 
-	if(bytes_received==SOCKET_ERROR||bytes_received==0)
+	if(Bytes_received==SOCKET_ERROR||Bytes_received==0)
 	{
-		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_RCON_REPLY,1,1,(DWORD)recv);
+		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_RCON_REPLY,1,1,(unsigned int)recv);
 
-		return FALSE;
+		return false;
 	}
-	else if(bytes_received<(packet_size-12-total_bytes))
+	else if(Bytes_received<(packet_size-12-total_bytes))
 	{
-		total_bytes += bytes_received;
+		total_bytes += Bytes_received;
 		goto RCON_INNER_START;
 	}
 
 	reply_union.rcon_reply = rs_buffer;
 
-	if(Callback(SSQ_RCON_REPLY_CALLBACK,&reply_union)==FALSE)
+	if(Callback(SSQ_RCON_REPLY_CALLBACK,&reply_union)==false)
 	{
 		goto RCON_END;
 	}
@@ -885,15 +907,15 @@ BOOL WINAPI SSQ_GetRconReply(char* password,char* command)
 
 	RCON_END:
 
-	return TRUE;
+	return true;
 }
 
-char* WINAPI SSQ_GetRuleName(PSSQ_RULES_REPLY rules_reply,short index)
+char* SSQ_GetRuleName(PSSQ_RULES_REPLY rules_reply,short index)
 {
 	static char* pointer;
 	static short counter;
 
-	if(HIWORD(rules_reply)==0||rules_reply->data_size==0||HIWORD(rules_reply->data)==0||index>(rules_reply->num_rules-1)||ssq_is_initialized==FALSE)
+	if(HIWORD(rules_reply)==0||rules_reply->data_size==0||HIWORD(rules_reply->data)==0||index>(rules_reply->num_rules-1)||ssq_is_initialized==false)
 	{
 		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_RULE_NAME,0,1,0);
 
@@ -911,12 +933,12 @@ char* WINAPI SSQ_GetRuleName(PSSQ_RULES_REPLY rules_reply,short index)
 	return pointer;
 }
 
-char* WINAPI SSQ_GetRuleValue(PSSQ_RULES_REPLY rules_reply,short index)
+char* SSQ_GetRuleValue(PSSQ_RULES_REPLY rules_reply,short index)
 {
 	static char* pointer;
 	static short counter;
 
-	if(HIWORD(rules_reply)==0||rules_reply->data_size==0||HIWORD(rules_reply->data)==0||index>(rules_reply->num_rules-1)||ssq_is_initialized==FALSE)
+	if(HIWORD(rules_reply)==0||rules_reply->data_size==0||HIWORD(rules_reply->data)==0||index>(rules_reply->num_rules-1)||ssq_is_initialized==false)
 	{
 		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_RULE_VALUE,0,1,0);
 
@@ -935,101 +957,101 @@ char* WINAPI SSQ_GetRuleValue(PSSQ_RULES_REPLY rules_reply,short index)
 	return pointer;
 }
 
-BOOL WINAPI SSQ_GetRulesReply()
+bool SSQ_GetRulesReply()
 {
-	static int bytes_received;
+	static int Bytes_received;
 	static SSQ_RULES_REPLY rules_reply;
 
-	if(HIWORD(Callback)==0||ssq_is_initialized==FALSE)
+	if(HIWORD(Callback)==0||ssq_is_initialized==false)
 	{
 		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_RULES_REPLY,0,1,0);
 
-		return FALSE;
+		return false;
 	}
 	else if(send(ssq_socket[SSQ_UDP_GS],A2S_RULES,A2S_RULES_LENGTH,0)==SOCKET_ERROR)
 	{
-		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_RULES_REPLY,1,1,(DWORD)send);
+		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_RULES_REPLY,1,1,(unsigned int)send);
 
-		return FALSE;
+		return false;
 	}
 
-	bytes_received = recv(ssq_socket[SSQ_UDP_GS],rs_buffer,max_rs_size,0);
+	Bytes_received = recv(ssq_socket[SSQ_UDP_GS],rs_buffer,max_rs_size,0);
 
-	if(bytes_received==SOCKET_ERROR||bytes_received==0)
+	if(Bytes_received==SOCKET_ERROR||Bytes_received==0)
 	{
-		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_RULES_REPLY,1,1,(DWORD)recv);
+		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_RULES_REPLY,1,1,(unsigned int)recv);
 
-		return FALSE;
+		return false;
 	}
 	else if(rs_buffer[4]!=S2A_RULES)
 	{
 		SSQ_OutputDebugString(EXTERNAL_SSQ_GET_RULES_REPLY,0,1,0);
 
-		return FALSE;
+		return false;
 	}
 
 	rules_reply.num_rules = *(short*)&rs_buffer[5];
-	rules_reply.data_size = bytes_received-7;
+	rules_reply.data_size = Bytes_received-7;
 	rules_reply.data = &rs_buffer[7];
 
 	reply_union.rules_reply = &rules_reply;
 
 	Callback(SSQ_RULES_REPLY_CALLBACK,&reply_union);
 
-	return TRUE;
+	return true;
 }
 
-BOOL WINAPI SSQ_Initialize(BOOL exit)
+bool SSQ_Initialize(bool exit)
 {
-	if(exit==FALSE&&ssq_is_initialized==FALSE)
+	if(exit==false&&ssq_is_initialized==false)
 	{
-		if(SSQ_Startup()==FALSE)
+		if(SSQ_Startup()==false)
 		{
-			return FALSE;
+			return false;
 		}
 
-		ssq_is_initialized = TRUE;
+		ssq_is_initialized = true;
 	}
-	else if(exit==TRUE&&ssq_is_initialized==TRUE)
+	else if(exit==true&&ssq_is_initialized==true)
 	{
-		if(SSQ_Cleanup()==FALSE)
+		if(SSQ_Cleanup()==false)
 		{
-			return FALSE;
+			return false;
 		}
 
-		ssq_is_initialized = FALSE;
+		ssq_is_initialized = false;
 	}
 	else
 	{
 		SSQ_OutputDebugString(EXTERNAL_SSQ_INITIALIZE,0,1,0);
 
-		return FALSE;
+		return false;
 	}
 
-	return TRUE;
+	return true;
 }
 
-DWORD WINAPI SSQ_LogThread(LPVOID lpParameter)
+unsigned int SSQ_LogThread(LPVOID lpParameter)
 {
-	static int bytes_received;
+	static int Bytes_received;
 
-	exit_log_thread = FALSE;
+	exit_log_thread = false;
 
-	while(exit_log_thread==FALSE)
+	while(exit_log_thread==false)
 	{
-		bytes_received = recv(ssq_socket[SSQ_UDP_LOG],rs_buffer,max_rs_size,0);
+		Bytes_received = recv(ssq_socket[SSQ_UDP_LOG],rs_buffer,max_rs_size,0);
 
-		if(bytes_received==SOCKET_ERROR||bytes_received==0)
+		if(Bytes_received==SOCKET_ERROR||Bytes_received==0)
 		{
 			if(WSAGetLastError()==WSAEINTR)
 			{
 				break;
 			}
 
-			SSQ_OutputDebugString(INTERNAL_SSQ_LOG_THREAD,1,0,(DWORD)recv);
+			SSQ_OutputDebugString(INTERNAL_SSQ_LOG_THREAD,1,0,(unsigned int)recv);
 
-			log_status = FALSE;
-			reply_union.log_notify = FALSE;
+			log_status = false;
+			reply_union.log_notify = false;
 
 			Callback(SSQ_LOG_THREAD_NOTIFY,&reply_union);
 
@@ -1047,17 +1069,17 @@ DWORD WINAPI SSQ_LogThread(LPVOID lpParameter)
 		Callback(SSQ_LOG_REPLY_CALLBACK,&reply_union);
 	}
 
-	log_status = FALSE;
-	reply_union.log_notify = TRUE;
+	log_status = false;
+	reply_union.log_notify = true;
 
 	Callback(SSQ_LOG_THREAD_NOTIFY,&reply_union);
 
 	return 0;
 }
 
-void WINAPI SSQ_OutputDebugString(BYTE index,BYTE winsock,BYTE doExport,DWORD address)
+void SSQ_OutputDebugString(unsigned char index,unsigned char winsock,unsigned char doExport,unsigned int address)
 {
-	static DWORD last_error;
+	static unsigned int last_error;
 	static char* function;
 	static char* module_foreign;
 	static char* function_foreign;
@@ -1088,7 +1110,7 @@ void WINAPI SSQ_OutputDebugString(BYTE index,BYTE winsock,BYTE doExport,DWORD ad
 		last_error = GetLastError();
 	}
 
-	if(SSQ_AddressToFunctionName(address,&module_foreign,&function_foreign)==FALSE)
+	if(SSQ_AddressToFunctionName(address,&module_foreign,&function_foreign)==false)
 	{
 		wsprintf
 		(
@@ -1107,12 +1129,12 @@ void WINAPI SSQ_OutputDebugString(BYTE index,BYTE winsock,BYTE doExport,DWORD ad
 	OutputDebugString(debug_string);
 }
 
-DWORD WINAPI SSQ_Ping()
+unsigned int SSQ_Ping()
 {
-	static DWORD ping;
-	static int bytes_received;
+	static unsigned int ping;
+	static int Bytes_received;
 
-	if(ssq_is_initialized==FALSE)
+	if(ssq_is_initialized==false)
 	{
 		SSQ_OutputDebugString(EXTERNAL_SSQ_PING,0,1,0);
 
@@ -1120,18 +1142,18 @@ DWORD WINAPI SSQ_Ping()
 	}
 	else if(send(ssq_socket[SSQ_UDP_GS],A2A_PING,A2A_PING_LENGTH,0)==SOCKET_ERROR)
 	{
-		SSQ_OutputDebugString(EXTERNAL_SSQ_PING,1,1,(DWORD)send);
+		SSQ_OutputDebugString(EXTERNAL_SSQ_PING,1,1,(unsigned int)send);
 
 		return 0xFFFFFFFF;
 	}
 
 	ping = GetTickCount();
 
-	bytes_received = recv(ssq_socket[SSQ_UDP_GS],rs_buffer,max_rs_size,0);
+	Bytes_received = recv(ssq_socket[SSQ_UDP_GS],rs_buffer,max_rs_size,0);
 
-	if(bytes_received==SOCKET_ERROR||bytes_received==0)
+	if(Bytes_received==SOCKET_ERROR||Bytes_received==0)
 	{
-		SSQ_OutputDebugString(EXTERNAL_SSQ_PING,1,1,(DWORD)recv);
+		SSQ_OutputDebugString(EXTERNAL_SSQ_PING,1,1,(unsigned int)recv);
 
 		return 0xFFFFFFFF;
 	}
@@ -1145,259 +1167,260 @@ DWORD WINAPI SSQ_Ping()
 	return GetTickCount()-ping;
 }
 
-BOOL WINAPI SSQ_SetCallbackAddress(SSQ_CALLBACK callback)
+bool SSQ_SetCallbackAddress(SSQ_CALLBACK callback)
 {
-	if(HIWORD(callback)==0||ssq_is_initialized==FALSE)
+	if(HIWORD(callback)==0||ssq_is_initialized==false)
 	{
 		SSQ_OutputDebugString(EXTERNAL_SSQ_SET_CALLBACK_ADDRESS,0,1,0);
 
-		return FALSE;
+		return false;
 	}
 
 	Callback = callback;
 
-	return TRUE;
+	return true;
 }
 
-BOOL WINAPI SSQ_SetGameServer(char* address)
+bool SSQ_SetGameServer(char* address)
 {
 	static SOCKADDR socket_address;
-	static int bytes_received;
+	static int Bytes_received;
 
-	if(HIWORD(address)==0||SSQ_GetIpPort(address,&socket_address)==FALSE||ssq_is_initialized==FALSE)
+	if(HIWORD(address)==0||SSQ_GetIpPort(address,&socket_address)==false||ssq_is_initialized==false)
 	{
 		SSQ_OutputDebugString(EXTERNAL_SSQ_SET_GAME_SERVER,0,1,0);
 
-		return FALSE;
+		return false;
 	}
 	else if(connect(ssq_socket[SSQ_UDP_GS],&socket_address,sizeof(socket_address))==SOCKET_ERROR)
 	{
-		SSQ_OutputDebugString(EXTERNAL_SSQ_SET_GAME_SERVER,1,1,(DWORD)connect);
+		SSQ_OutputDebugString(EXTERNAL_SSQ_SET_GAME_SERVER,1,1,(unsigned int)connect);
 
-		return FALSE;
+		return false;
 	}
 	else if(closesocket(ssq_socket[SSQ_TCP_RCON])==SOCKET_ERROR)
 	{
-		SSQ_OutputDebugString(EXTERNAL_SSQ_SET_GAME_SERVER,1,1,(DWORD)closesocket);
+		SSQ_OutputDebugString(EXTERNAL_SSQ_SET_GAME_SERVER,1,1,(unsigned int)closesocket);
 
-		return FALSE;
+		return false;
 	}
 
 	ssq_socket[SSQ_TCP_RCON] = socket(AF_INET,SOCK_STREAM,IPPROTO_TCP);
 
 	if(ssq_socket[SSQ_TCP_RCON]==INVALID_SOCKET)
 	{
-		SSQ_OutputDebugString(EXTERNAL_SSQ_SET_GAME_SERVER,1,1,(DWORD)socket);
+		SSQ_OutputDebugString(EXTERNAL_SSQ_SET_GAME_SERVER,1,1,(unsigned int)socket);
 
-		return FALSE;
+		return false;
 	}
 	else if(connect(ssq_socket[SSQ_TCP_RCON],&socket_address,sizeof(socket_address))==SOCKET_ERROR)
 	{
-		SSQ_OutputDebugString(EXTERNAL_SSQ_SET_GAME_SERVER,1,1,(DWORD)connect);
+		SSQ_OutputDebugString(EXTERNAL_SSQ_SET_GAME_SERVER,1,1,(unsigned int)connect);
 
-		return FALSE;
+		return false;
 	}
 	else if(send(ssq_socket[SSQ_UDP_GS],A2S_SERVERQUERY_GETCHALLENGE,A2S_SERVERQUERY_GETCHALLENGE_LENGTH,0)==SOCKET_ERROR)
 	{
-		SSQ_OutputDebugString(EXTERNAL_SSQ_SET_GAME_SERVER,1,1,(DWORD)send);
+		SSQ_OutputDebugString(EXTERNAL_SSQ_SET_GAME_SERVER,1,1,(unsigned int)send);
 
-		return FALSE;
+		return false;
 	}
 
-	bytes_received = recv(ssq_socket[SSQ_UDP_GS],rs_buffer,max_rs_size,0);
+	Bytes_received = recv(ssq_socket[SSQ_UDP_GS],rs_buffer,max_rs_size,0);
 
-	if(bytes_received==SOCKET_ERROR||bytes_received==0)
+	if(Bytes_received==SOCKET_ERROR||Bytes_received==0)
 	{
-		SSQ_OutputDebugString(EXTERNAL_SSQ_SET_GAME_SERVER,1,1,(DWORD)recv);
+		SSQ_OutputDebugString(EXTERNAL_SSQ_SET_GAME_SERVER,1,1,(unsigned int)recv);
 
-		return FALSE;
+		return false;
 	}
 	else if(rs_buffer[4]!=S2C_CHALLENGE)
 	{
 		SSQ_OutputDebugString(EXTERNAL_SSQ_SET_GAME_SERVER,0,1,0);
 
-		return FALSE;
+		return false;
 	}
 
 	//*(long*)&A2S_PLAYER[5] = *(long*)&rs_buffer[5];
 	//*(long*)&A2S_RULES[5] = *(long*)&rs_buffer[5];
 
-	return TRUE;
+	return true;
 }
 
-BOOL WINAPI SSQ_SetLogStatus(BOOL status,USHORT port)
+bool SSQ_SetLogStatus(bool status,USHORT port)
 {
+#if 0
 	static LPADDRINFO response;
 	static char hostname[64];
 
-	if(status==log_status||HIWORD(Callback)==0||ssq_is_initialized==FALSE)
+	if(status==log_status||HIWORD(Callback)==0||ssq_is_initialized==false)
 	{
 		SSQ_OutputDebugString(EXTERNAL_SSQ_SET_LOG_STATUS,0,1,0);
 
-		return FALSE;
+		return false;
 	}	
-	else if(GetExitCodeThread(handle_log_thread,&exit_code_log_thread)==FALSE)
+	else if(GetExitCodeThread(int_log_thread,&exit_code_log_thread)==false)
 	{
-		SSQ_OutputDebugString(EXTERNAL_SSQ_SET_LOG_STATUS,0,1,(DWORD)GetExitCodeThread);
+		SSQ_OutputDebugString(EXTERNAL_SSQ_SET_LOG_STATUS,0,1,(unsigned int)GetExitCodeThread);
 
-		return FALSE;
+		return false;
 	}
 	else if(exit_code_log_thread!=STILL_ACTIVE)
 	{
-		handle_log_thread = CreateThread(0,0,SSQ_LogThread,0,CREATE_SUSPENDED,&identifier_log_thread);
+		int_log_thread = CreateThread(0,0,SSQ_LogThread,0,CREATE_SUSPENDED,&identifier_log_thread);
 
-		if(handle_log_thread==0)
+		if(int_log_thread==0)
 		{
-			SSQ_OutputDebugString(EXTERNAL_SSQ_SET_LOG_STATUS,0,1,(DWORD)CreateThread);
+			SSQ_OutputDebugString(EXTERNAL_SSQ_SET_LOG_STATUS,0,1,(unsigned int)CreateThread);
 
-			return FALSE;
+			return false;
 		}
 	}
 
-	if(status==TRUE)
+	if(status==true)
 	{
 		if(gethostname(hostname,sizeof(hostname))==SOCKET_ERROR)
 		{
-			SSQ_OutputDebugString(EXTERNAL_SSQ_SET_LOG_STATUS,1,1,(DWORD)gethostname);
+			SSQ_OutputDebugString(EXTERNAL_SSQ_SET_LOG_STATUS,1,1,(unsigned int)gethostname);
 
-			return FALSE;
+			return false;
 		}
 		else if(getaddrinfo(hostname,0,0,&response)!=0)
 		{
-			SSQ_OutputDebugString(EXTERNAL_SSQ_SET_LOG_STATUS,1,1,(DWORD)getaddrinfo);
+			SSQ_OutputDebugString(EXTERNAL_SSQ_SET_LOG_STATUS,1,1,(unsigned int)getaddrinfo);
 
-			return FALSE;
+			return false;
 		}
 		else if(closesocket(ssq_socket[SSQ_UDP_LOG])==SOCKET_ERROR)
 		{
-			SSQ_OutputDebugString(EXTERNAL_SSQ_SET_LOG_STATUS,1,1,(DWORD)closesocket);
+			SSQ_OutputDebugString(EXTERNAL_SSQ_SET_LOG_STATUS,1,1,(unsigned int)closesocket);
 
-			return FALSE;
+			return false;
 		}
 
 		ssq_socket[SSQ_UDP_LOG] = socket(AF_INET,SOCK_DGRAM,IPPROTO_UDP);
 
 		if(ssq_socket[SSQ_UDP_LOG]==INVALID_SOCKET)
 		{
-			SSQ_OutputDebugString(EXTERNAL_SSQ_SET_LOG_STATUS,1,1,(DWORD)socket);
+			SSQ_OutputDebugString(EXTERNAL_SSQ_SET_LOG_STATUS,1,1,(unsigned int)socket);
 
-			return FALSE;
+			return false;
 		}
 
 		((PSOCKADDR_IN)response->ai_addr)->sin_port = htons(port);
 
 		if(bind(ssq_socket[SSQ_UDP_LOG],response->ai_addr,sizeof(*response->ai_addr))==SOCKET_ERROR)
 		{
-			SSQ_OutputDebugString(EXTERNAL_SSQ_SET_LOG_STATUS,1,1,(DWORD)bind);
+			SSQ_OutputDebugString(EXTERNAL_SSQ_SET_LOG_STATUS,1,1,(unsigned int)bind);
 
-			return FALSE;
+			return false;
 		}
 
 		freeaddrinfo(response);
 
-		if(ResumeThread(handle_log_thread)==0xFFFFFFFF)
+		if(ResumeThread(int_log_thread)==0xFFFFFFFF)
 		{
-			SSQ_OutputDebugString(EXTERNAL_SSQ_SET_LOG_STATUS,0,1,(DWORD)ResumeThread);
+			SSQ_OutputDebugString(EXTERNAL_SSQ_SET_LOG_STATUS,0,1,(unsigned int)ResumeThread);
 
-			return FALSE;
+			return false;
 		}
 
-		log_status = TRUE;
+		log_status = true;
 	}
-	else if(status==FALSE)
+	else if(status==false)
 	{
-		if(SuspendThread(handle_log_thread)==0xFFFFFFFF)
+		if(SuspendThread(int_log_thread)==0xFFFFFFFF)
 		{
-			SSQ_OutputDebugString(EXTERNAL_SSQ_SET_LOG_STATUS,0,1,(DWORD)SuspendThread);
+			SSQ_OutputDebugString(EXTERNAL_SSQ_SET_LOG_STATUS,0,1,(unsigned int)SuspendThread);
 
-			return FALSE;
+			return false;
 		}
 
-		log_status = FALSE;
+		log_status = false;
 	}
 	else
 	{
 		SSQ_OutputDebugString(EXTERNAL_SSQ_SET_LOG_STATUS,0,1,0);
 
-		return FALSE;
+		return false;
 	}
-
-	return TRUE;
+#endif
+	return true;
 }
 
-BOOL WINAPI SSQ_SetMasterServer(char* address)
+bool SSQ_SetMasterServer(char* address)
 {
 	static SOCKADDR socket_address;
 
-	if(HIWORD(address)==0||SSQ_GetIpPort(address,&socket_address)==FALSE||ssq_is_initialized==FALSE)
+	if(HIWORD(address)==0||SSQ_GetIpPort(address,&socket_address)==false||ssq_is_initialized==false)
 	{
 		SSQ_OutputDebugString(EXTERNAL_SSQ_SET_MASTER_SERVER,0,1,0);
 
-		return FALSE;
+		return false;
 	}
 	else if(connect(ssq_socket[SSQ_UDP_MS],&socket_address,sizeof(socket_address))==SOCKET_ERROR)
 	{
-		SSQ_OutputDebugString(EXTERNAL_SSQ_SET_MASTER_SERVER,1,1,(DWORD)connect);
+		SSQ_OutputDebugString(EXTERNAL_SSQ_SET_MASTER_SERVER,1,1,(unsigned int)connect);
 
-		return FALSE;
+		return false;
 	}
 
-	return TRUE;
+	return true;
 }
 
-BOOL WINAPI SSQ_SetTimeout(DWORD type,int timeout)
+bool SSQ_SetTimeout(unsigned int type,int timeout)
 {
-	static BYTE socket_count;
+	static unsigned char socket_count;
 
-	if(ssq_is_initialized==FALSE)
+	if(ssq_is_initialized==false)
 	{
 		SSQ_OutputDebugString(EXTERNAL_SSQ_SET_TIMEOUT,0,1,0);
 
-		return FALSE;
+		return false;
 	}
 
 	for(socket_count = 0;socket_count<SSQ_SOCKET_COUNT;socket_count++)
 	{
-		if((type&(DWORD)(1<<socket_count))==(DWORD)(1<<socket_count))
+		if((type&(unsigned int)(1<<socket_count))==(unsigned int)(1<<socket_count))
 		{
 			if(setsockopt(ssq_socket[socket_count],SOL_SOCKET,SO_SNDTIMEO,(char*)&timeout,4)==SOCKET_ERROR)
 			{
-				SSQ_OutputDebugString(EXTERNAL_SSQ_SET_TIMEOUT,1,1,(DWORD)setsockopt);
+				SSQ_OutputDebugString(EXTERNAL_SSQ_SET_TIMEOUT,1,1,(unsigned int)setsockopt);
 	
-				return FALSE;
+				return false;
 			}
 			else if(setsockopt(ssq_socket[socket_count],SOL_SOCKET,SO_RCVTIMEO,(char*)&timeout,4)==SOCKET_ERROR)
 			{
-				SSQ_OutputDebugString(EXTERNAL_SSQ_SET_TIMEOUT,1,1,(DWORD)setsockopt);
+				SSQ_OutputDebugString(EXTERNAL_SSQ_SET_TIMEOUT,1,1,(unsigned int)setsockopt);
 
-				return FALSE;
+				return false;
 			}
 		}
 	}
 
-	return TRUE;
+	return true;
 }
 
-BOOL WINAPI SSQ_Startup()
+bool SSQ_Startup()
 {
 	static WSADATA wsa_data;
-	static BYTE socket_count;
+	static unsigned char socket_count;
 
-	SSQ_GetFunctionStrings((PIMAGE_DOS_HEADER)handle_module);
+	SSQ_GetFunctionStrings((PIMAGE_DOS_HEADER)int_module);
 
 	rs_buffer = (char*)VirtualAlloc(0,max_rs_size,MEM_COMMIT|MEM_RESERVE,PAGE_READWRITE);
 
 	if(rs_buffer==0)
 	{
-		SSQ_OutputDebugString(INTERNAL_SSQ_STARTUP,0,0,(DWORD)VirtualAlloc);
+		SSQ_OutputDebugString(INTERNAL_SSQ_STARTUP,0,0,(unsigned int)VirtualAlloc);
 
-		return FALSE;
+		return false;
 	}
 	else if(WSAStartup(MAKEWORD(2,2),&wsa_data)!=0)
 	{
-		SSQ_OutputDebugString(INTERNAL_SSQ_STARTUP,0,0,(DWORD)WSAStartup);
+		SSQ_OutputDebugString(INTERNAL_SSQ_STARTUP,0,0,(unsigned int)WSAStartup);
 
-		return FALSE;
+		return false;
 	}
 
 	ssq_socket[SSQ_UDP_GS] = socket(AF_INET,SOCK_DGRAM,IPPROTO_UDP);
@@ -1409,30 +1432,20 @@ BOOL WINAPI SSQ_Startup()
 	{
 		if(ssq_socket[socket_count]==INVALID_SOCKET)
 		{
-			SSQ_OutputDebugString(INTERNAL_SSQ_STARTUP,1,0,(DWORD)socket);
+			SSQ_OutputDebugString(INTERNAL_SSQ_STARTUP,1,0,(unsigned int)socket);
 
-			return FALSE;
+			return false;
 		}
 	}
 
-	handle_log_thread = CreateThread(0,0,SSQ_LogThread,0,CREATE_SUSPENDED,&identifier_log_thread);
+	int_log_thread = CreateThread(0,0,SSQ_LogThread,0,CREATE_SUSPENDED,&identifier_log_thread);
 
-	if(handle_log_thread==0)
+	if(int_log_thread==0)
 	{
-		SSQ_OutputDebugString(INTERNAL_SSQ_STARTUP,0,0,(DWORD)CreateThread);
+		SSQ_OutputDebugString(INTERNAL_SSQ_STARTUP,0,0,(unsigned int)CreateThread);
 
-		return FALSE;
+		return false;
 	}
 
-	return TRUE;
-}
-
-BOOL APIENTRY DllMain(HANDLE hModule,DWORD ul_reason_for_call,LPVOID lpReserved)
-{
-	if(ul_reason_for_call==DLL_PROCESS_ATTACH)
-	{
-		handle_module = hModule;
-	}
-
-    return TRUE;
+	return true;
 }
